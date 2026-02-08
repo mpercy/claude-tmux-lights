@@ -165,6 +165,16 @@ def main():
         if updated:
             atomic_write_json(viewed_path, viewed_json)
 
+    # Deduplicate by tmux_pane — if two sessions claim the same pane,
+    # keep only the most recently updated one (the other is a ghost).
+    by_pane = {}
+    for session in sessions:
+        pane = session.get("tmux_pane", "")
+        existing = by_pane.get(pane)
+        if existing is None or session.get("state_changed_ts", 0) > existing.get("state_changed_ts", 0):
+            by_pane[pane] = session
+    sessions = list(by_pane.values())
+
     # Sort sessions by session_id for deterministic indicator order
     sessions.sort(key=lambda s: s.get("session_id", ""))
 

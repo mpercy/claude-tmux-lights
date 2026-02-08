@@ -120,17 +120,39 @@ def handle_event(event, state_dir):
         return None
 
     if hook_name == "SessionStart":
+        # Evict stale state files claiming the same pane — a pane can only
+        # run one Claude session, so any prior file is a ghost from a
+        # killed/restarted session whose SessionEnd never fired.
+        try:
+            for filename in os.listdir(state_dir):
+                if not filename.endswith(".json") or filename == "viewed.json":
+                    continue
+                if filename == f"{session_id}.json":
+                    continue  # Don't evict ourselves
+                path = os.path.join(state_dir, filename)
+                data = read_json_safe(path)
+                if data and data.get("tmux_pane") == tmux_pane:
+                    try:
+                        os.unlink(path)
+                    except OSError:
+                        pass
+        except OSError:
+            pass
+
         window_id = get_tmux_window_id(tmux_pane)
+        # Start as "waiting" + pre-acknowledged so the light is white (idle).
+        # UserPromptSubmit will flip to "active" (green) when work begins.
         state = {
             "session_id": session_id,
-            "state": "active",
+            "state": "waiting",
             "state_changed_ts": now,
-            "waiting_since_ts": None,
+            "waiting_since_ts": now,
             "cwd": event.get("cwd", ""),
             "tmux_pane": tmux_pane,
             "tmux_window": window_id or "",
         }
         atomic_write_json(state_path, state)
+        mark_viewed(state_dir, session_id, now)
         tmux_refresh()
         return check_tmux_setup()
 
