@@ -13,6 +13,10 @@ import os
 import sys
 import time
 
+# Add scripts directory to path for sibling imports
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from utils import atomic_write_json, get_state_dir, read_json_safe
+
 
 # Default configuration
 DEFAULTS = {
@@ -28,14 +32,6 @@ DEFAULTS = {
 }
 
 
-def get_state_dir():
-    """Resolve state directory (same logic as hook_handler)."""
-    xdg_runtime = os.environ.get("XDG_RUNTIME_DIR")
-    if xdg_runtime:
-        return os.path.join(xdg_runtime, "claude-tmux-lights")
-    return os.path.join(os.path.expanduser("~"), ".local", "state", "claude-tmux-lights")
-
-
 def load_config():
     """Load config from ~/.config/claude-tmux-lights/config.json, with defaults."""
     config = dict(DEFAULTS)
@@ -49,32 +45,6 @@ def load_config():
     except (OSError, json.JSONDecodeError, ValueError):
         pass
     return config
-
-
-def read_json_safe(path):
-    """Read JSON file, returning None on any error."""
-    try:
-        with open(path) as f:
-            return json.load(f)
-    except (OSError, json.JSONDecodeError, ValueError):
-        return None
-
-
-def atomic_write_json(path, data):
-    """Write JSON atomically using a temp file + rename."""
-    import tempfile
-    dir_path = os.path.dirname(path)
-    fd, tmp_path = tempfile.mkstemp(dir=dir_path, suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w") as f:
-            json.dump(data, f)
-        os.rename(tmp_path, path)
-    except Exception:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
 
 
 def format_elapsed(seconds):
@@ -123,9 +93,13 @@ def render_indicator(session, viewed_json, config, now):
 
 
 def cleanup_orphans(state_dir, sessions, threshold):
-    """Remove state files that are older than threshold seconds."""
+    """Remove orphaned state files (waiting sessions older than threshold)."""
     now = time.time()
     for session in sessions:
+        # Only clean up waiting sessions — active sessions may be running
+        # long tasks without state transitions
+        if session.get("state") != "waiting":
+            continue
         state_changed_ts = session.get("state_changed_ts", 0)
         if now - state_changed_ts > threshold:
             session_id = session.get("session_id", "")
@@ -167,8 +141,9 @@ def main():
         sys.exit(0)
 
     if not sessions:
-        # Opportunistic cleanup even if no sessions match this window
-        if all_sessions:
+        # Opportunistic cleanup — only from the active window to avoid
+        # N redundant passes (one per window) every status-interval
+        if window_active and all_sessions:
             cleanup_orphans(state_dir, all_sessions, config["orphan_threshold_seconds"])
         sys.exit(0)
 
@@ -190,6 +165,9 @@ def main():
         if updated:
             atomic_write_json(viewed_path, viewed_json)
 
+    # Sort sessions by session_id for deterministic indicator order
+    sessions.sort(key=lambda s: s.get("session_id", ""))
+
     # Render indicators
     max_indicators = config["max_indicators_per_window"]
     indicators = []
@@ -202,8 +180,9 @@ def main():
         # Leading space to separate from window name
         sys.stdout.write(" " + "".join(indicators))
 
-    # Opportunistic cleanup
-    cleanup_orphans(state_dir, all_sessions, config["orphan_threshold_seconds"])
+    # Opportunistic cleanup — only from the active window
+    if window_active:
+        cleanup_orphans(state_dir, all_sessions, config["orphan_threshold_seconds"])
 
 
 if __name__ == "__main__":

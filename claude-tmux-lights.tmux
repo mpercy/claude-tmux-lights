@@ -20,19 +20,22 @@ else
 fi
 mkdir -p "$STATE_DIR"
 
-# Append renderer to window-status-format if not already present
 RENDER_CALL="#(python3 ${RENDER_SCRIPT} #{window_id} #{window_active})"
 
 for format_option in "window-status-format" "window-status-current-format"; do
     current_value=$(tmux show-options -gv "$format_option" 2>/dev/null)
-    if [ -n "$current_value" ] && ! echo "$current_value" | grep -q "tmux_render.py"; then
-        # Insert renderer call before the trailing space+quote
-        # Typical format: ' #I:#W ' -> ' #I:#W#(...) '
-        new_value=$(echo "$current_value" | sed "s/ *'$/${RENDER_CALL} '/; s/ *$/ ${RENDER_CALL} /")
-        # If sed didn't change it (no trailing quote), just append
-        if [ "$new_value" = "$current_value" ]; then
-            new_value="${current_value}${RENDER_CALL}"
-        fi
-        tmux set-option -g "$format_option" "$new_value"
+
+    # Skip if empty or already configured
+    if [ -z "$current_value" ]; then
+        continue
     fi
+    if echo "$current_value" | grep -q "tmux_render.py"; then
+        continue
+    fi
+
+    # Strip trailing whitespace, append renderer call, re-add trailing space
+    trimmed="${current_value% }"
+    new_value="${trimmed}${RENDER_CALL} "
+
+    tmux set-option -g "$format_option" "$new_value"
 done
