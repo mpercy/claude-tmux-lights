@@ -1,0 +1,5 @@
+{
+  "name": "claude-tmux-lights",
+  "version": "0.1.0",
+  "description": "Show Claude Code session status indicators in tmux window tabs"
+}
