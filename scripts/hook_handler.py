@@ -170,7 +170,7 @@ def handle_event(event, state_dir):
         }
         atomic_write_json(state_path, state)
         tmux_refresh()
-        return None
+        return check_tmux_setup()
 
     if hook_name == "Stop":
         existing = read_json_safe(state_path)
