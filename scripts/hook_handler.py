@@ -190,19 +190,15 @@ def handle_event(event, state_dir):
 
     if hook_name == "Notification":
         notification_type = event.get("notification_type", "")
-        if notification_type != "idle_prompt":
-            return None
 
-        existing = read_json_safe(state_path)
-        if not existing:
-            return None
-
-        prev_state = existing.get("state", "")
-        window_id = existing.get("tmux_window", "") or get_tmux_window_id(tmux_pane)
-
-        if prev_state == "active":
-            # Interrupt recovery: user pressed Esc, idle_prompt fired ~60s later.
-            # Set state to waiting and auto-acknowledge (mark viewed).
+        if notification_type in ("permission_prompt", "elicitation_dialog"):
+            # Claude is blocked waiting for user action (permission approval
+            # or answering a question) — treat like Stop so the light turns
+            # yellow (waiting for user action).
+            existing = read_json_safe(state_path)
+            if not existing:
+                return None
+            window_id = existing.get("tmux_window", "") or get_tmux_window_id(tmux_pane)
             state = {
                 "session_id": session_id,
                 "state": "waiting",
@@ -213,10 +209,56 @@ def handle_event(event, state_dir):
                 "tmux_window": window_id,
             }
             atomic_write_json(state_path, state)
-            mark_viewed(state_dir, session_id, now)
             tmux_refresh()
-        # If already waiting, no-op (Stop already fired)
+            return None
 
+        if notification_type == "idle_prompt":
+            existing = read_json_safe(state_path)
+            if not existing:
+                return None
+
+            prev_state = existing.get("state", "")
+            window_id = existing.get("tmux_window", "") or get_tmux_window_id(tmux_pane)
+
+            if prev_state == "active":
+                # Interrupt recovery: user pressed Esc, idle_prompt fired ~60s later.
+                # Set state to waiting and auto-acknowledge (mark viewed).
+                state = {
+                    "session_id": session_id,
+                    "state": "waiting",
+                    "state_changed_ts": now,
+                    "waiting_since_ts": now,
+                    "cwd": existing.get("cwd", ""),
+                    "tmux_pane": tmux_pane,
+                    "tmux_window": window_id,
+                }
+                atomic_write_json(state_path, state)
+                mark_viewed(state_dir, session_id, now)
+                tmux_refresh()
+            # If already waiting, no-op (Stop already fired)
+
+            return None
+
+        return None
+
+    if hook_name == "PostToolUse":
+        # A tool just completed — if we were "waiting" (from a permission
+        # prompt or elicitation dialog), flip back to "active" since Claude
+        # is working again. Skip if already active to avoid unnecessary writes.
+        existing = read_json_safe(state_path)
+        if existing and existing.get("state") == "waiting":
+            window_id = existing.get("tmux_window", "") or get_tmux_window_id(tmux_pane)
+            state = {
+                "session_id": session_id,
+                "state": "active",
+                "state_changed_ts": now,
+                "waiting_since_ts": None,
+                "cwd": existing.get("cwd", ""),
+                "tmux_pane": tmux_pane,
+                "tmux_window": window_id,
+            }
+            atomic_write_json(state_path, state)
+            tmux_refresh()
         return None
 
     return None

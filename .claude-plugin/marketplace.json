@@ -1,0 +1,13 @@
+{
+  "name": "claude-tmux-lights",
+  "owner": {
+    "name": "mpercy"
+  },
+  "plugins": [
+    {
+      "name": "claude-tmux-lights",
+      "source": ".",
+      "description": "Show Claude Code session status indicators in tmux window tabs"
+    }
+  ]
+}
