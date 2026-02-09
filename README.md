@@ -36,11 +36,11 @@ Switching to that tmux window auto-acknowledges it (yellow becomes white). Submi
 claude --plugin-dir /path/to/claude-tmux-lights
 ```
 
-**Option B: Permanent install** via local marketplace
+**Option B: Permanent install** via marketplace
 
 ```bash
 # Inside Claude Code:
-/plugin marketplace add /path/to/claude-tmux-lights
+/plugin marketplace add mpercy/claude-tmux-lights
 /plugin install claude-tmux-lights@claude-tmux-lights
 ```
 

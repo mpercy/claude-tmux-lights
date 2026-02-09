@@ -6,7 +6,10 @@
   "plugins": [
     {
       "name": "claude-tmux-lights",
-      "source": ".",
+      "source": {
+        "source": "github",
+        "repo": "mpercy/claude-tmux-lights"
+      },
       "description": "Show Claude Code session status indicators in tmux window tabs"
     }
   ]
