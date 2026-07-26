@@ -1,6 +1,6 @@
 # claude-tmux-lights
 
-At-a-glance status indicators for Claude Code sessions in your tmux tab bar.
+At-a-glance status indicators for Claude Code and Codex sessions in your tmux tab bar.
 
 Running multiple Claude Code sessions across tmux windows? **claude-tmux-lights** adds a small colored indicator next to each window name so you can see which sessions are working, which need your attention, and which are idle — without switching windows.
 
@@ -107,7 +107,7 @@ cached copy.
 
 The plugin has two components:
 
-**Hook handler** (`scripts/hook_handler.py`) — A Claude Code plugin hook that writes per-session JSON state files whenever Claude starts working, stops, needs permission, or ends a session. It listens to 7 hook events:
+**Hook handler** (`scripts/hook_handler.py`) — A Claude Code plugin hook that writes per-session JSON state files whenever Claude starts working, stops, needs permission, or ends a session. It listens to 8 hook events:
 
 | Hook | Effect |
 |------|--------|
@@ -118,6 +118,7 @@ The plugin has two components:
 | `Notification(permission_prompt)` | Sets state to waiting (yellow) |
 | `Notification(elicitation_dialog)` | Sets state to waiting (yellow) |
 | `Notification(idle_prompt)` | Interrupt recovery (white) |
+| `PermissionRequest` | Codex-only; sets state to waiting (yellow) while a command awaits approval |
 | `SessionEnd` | Deletes state file |
 
 **Renderer** (`scripts/tmux_render.py`) — Called by tmux every `status-interval` (typically 2s) for each window tab via `#()` interpolation. Reads state files, determines display, and outputs tmux-formatted indicator strings.

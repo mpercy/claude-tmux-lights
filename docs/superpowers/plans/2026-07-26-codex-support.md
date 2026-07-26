@@ -353,7 +353,9 @@ Expected: plugin listed as `installed, enabled`. If `marketplace add` rejects th
 codex plugin list 2>&1 | grep claude-tmux-lights
 ```
 
-Inspect the PATH column: if it points into `/Users/mpercy/src/claude-tmux-lights`, installs run in-place (repo edits live immediately — same as the Claude side). If it points into a cache dir, note that `codex plugin add` must be re-run after repo changes. Record which for the final summary and memory.
+The PATH column is **not diagnostic** here — it shows the marketplace source path (e.g. `/Users/mpercy/src/claude-tmux-lights`) regardless of whether the install is in-place or copied. To determine which, check the actual install root instead: the `Installed plugin root:` line printed by `codex plugin add`, or compare file content/inodes between the repo and that root (e.g. `stat -f "%i %N"` on a file in both locations, or check whether `__pycache__/*.pyc` mtimes in the install root match the repo's pre-install mtimes, which would indicate a preserved-timestamp copy rather than in-place execution). Record which for the final summary and memory.
+
+Probe result (2026-07-26): **copied**. `codex plugin add` snapshots the repo into `~/.codex/plugins/cache/claude-tmux-lights/claude-tmux-lights/<version>/` at install time — a real copy (different inode from the repo file), not a symlink or in-place execution. `codex plugin add claude-tmux-lights@claude-tmux-lights` must be re-run after repo changes to pick them up.
 
 - [ ] **Step 3: Probe — do hooks fire with `TMUX_PANE`? (headless, bypasses trust)**
 
