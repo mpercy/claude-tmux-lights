@@ -33,6 +33,49 @@ def get_tmux_window_id(tmux_pane):
     return None
 
 
+SHELL_COMMANDS = {"zsh", "bash", "fish", "sh", "dash", "tcsh", "csh", "nu", "login"}
+
+
+def find_pane_by_cwd(cwd):
+    """Locate the tmux pane for a session that has no TMUX_PANE.
+
+    Daemon-hosted (background) sessions run hooks in a worker process with
+    no tmux ancestry, so the pane must be inferred: match the session's cwd
+    against pane working directories, preferring the pane whose foreground
+    process is not a shell (the attached Claude client rather than an idle
+    prompt). Returns (pane_id, window_id), or (None, None) unless exactly
+    one candidate remains — no light beats a light on the wrong window.
+    """
+    if not cwd:
+        return None, None
+    try:
+        result = subprocess.run(
+            ["tmux", "list-panes", "-a", "-F",
+             "#{pane_id}\t#{window_id}\t#{pane_current_command}\t#{pane_current_path}"],
+            capture_output=True, text=True, timeout=5
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return None, None
+    if result.returncode != 0:
+        return None, None
+
+    target = os.path.realpath(cwd)
+    candidates = []
+    for line in result.stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) != 4:
+            continue
+        pane_id, window_id, command, path = parts
+        if os.path.realpath(path) == target:
+            candidates.append((pane_id, window_id, command))
+
+    preferred = [c for c in candidates if c[2] not in SHELL_COMMANDS]
+    pick = preferred or candidates
+    if len(pick) == 1:
+        return pick[0][0], pick[0][1]
+    return None, None
+
+
 def tmux_refresh():
     """Trigger tmux status line refresh."""
     try:
@@ -99,15 +142,27 @@ def handle_event(event, state_dir):
     if not session_id:
         return None
 
+    state_path = os.path.join(state_dir, f"{session_id}.json")
+
     tmux_pane = os.environ.get("TMUX_PANE", "")
     if not tmux_pane:
-        # Not running in tmux — skip state file operations but still
-        # check setup on SessionStart
+        # No tmux ancestry (e.g. a daemon-hosted background session whose
+        # hooks run in a detached worker) — fall back to the pane recorded
+        # on a previous event, then to matching the session cwd against
+        # pane working directories.
+        existing = read_json_safe(state_path)
+        if existing and existing.get("tmux_pane"):
+            tmux_pane = existing["tmux_pane"]
+        else:
+            tmux_pane, _ = find_pane_by_cwd(event.get("cwd", ""))
+            tmux_pane = tmux_pane or ""
+    if not tmux_pane:
+        # Genuinely not visible in tmux — skip state file operations but
+        # still check setup on SessionStart
         if hook_name == "SessionStart":
             return check_tmux_setup() if os.environ.get("TMUX") else None
         return None
 
-    state_path = os.path.join(state_dir, f"{session_id}.json")
     now = time.time()
 
     if hook_name == "SessionEnd":
@@ -194,17 +249,16 @@ def handle_event(event, state_dir):
         if notification_type in ("permission_prompt", "elicitation_dialog"):
             # Claude is blocked waiting for user action (permission approval
             # or answering a question) — treat like Stop so the light turns
-            # yellow (waiting for user action).
+            # yellow (waiting for user action). Writes even when no state
+            # file exists so a wrongly-removed file self-heals.
             existing = read_json_safe(state_path)
-            if not existing:
-                return None
-            window_id = existing.get("tmux_window", "") or get_tmux_window_id(tmux_pane)
+            window_id = (existing or {}).get("tmux_window", "") or get_tmux_window_id(tmux_pane)
             state = {
                 "session_id": session_id,
                 "state": "waiting",
                 "state_changed_ts": now,
                 "waiting_since_ts": now,
-                "cwd": existing.get("cwd", ""),
+                "cwd": event.get("cwd", (existing or {}).get("cwd", "")),
                 "tmux_pane": tmux_pane,
                 "tmux_window": window_id,
             }
@@ -242,23 +296,25 @@ def handle_event(event, state_dir):
         return None
 
     if hook_name == "PostToolUse":
-        # A tool just completed — if we were "waiting" (from a permission
-        # prompt or elicitation dialog), flip back to "active" since Claude
-        # is working again. Skip if already active to avoid unnecessary writes.
+        # A tool just completed — Claude is working. Flip "waiting" (from a
+        # permission prompt or elicitation dialog) back to "active", and
+        # recreate the file if it's missing so a wrongly-removed session
+        # self-heals mid-turn. Skip if already active to avoid writes.
         existing = read_json_safe(state_path)
-        if existing and existing.get("state") == "waiting":
-            window_id = existing.get("tmux_window", "") or get_tmux_window_id(tmux_pane)
-            state = {
-                "session_id": session_id,
-                "state": "active",
-                "state_changed_ts": now,
-                "waiting_since_ts": None,
-                "cwd": existing.get("cwd", ""),
-                "tmux_pane": tmux_pane,
-                "tmux_window": window_id,
-            }
-            atomic_write_json(state_path, state)
-            tmux_refresh()
+        if existing and existing.get("state") == "active":
+            return None
+        window_id = (existing or {}).get("tmux_window", "") or get_tmux_window_id(tmux_pane)
+        state = {
+            "session_id": session_id,
+            "state": "active",
+            "state_changed_ts": now,
+            "waiting_since_ts": None,
+            "cwd": event.get("cwd", (existing or {}).get("cwd", "")),
+            "tmux_pane": tmux_pane,
+            "tmux_window": window_id,
+        }
+        atomic_write_json(state_path, state)
+        tmux_refresh()
         return None
 
     return None

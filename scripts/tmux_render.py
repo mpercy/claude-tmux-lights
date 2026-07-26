@@ -10,6 +10,7 @@ Writes to viewed.json when the active window has waiting sessions.
 
 import json
 import os
+import subprocess
 import sys
 import time
 
@@ -92,22 +93,57 @@ def render_indicator(session, viewed_json, config, now):
     return ""
 
 
+def get_live_pane_ids():
+    """Get set of currently active tmux pane IDs."""
+    try:
+        result = subprocess.run(
+            ["tmux", "list-panes", "-a", "-F", "#{pane_id}"],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0:
+            # An empty pane list can't be real (we're rendering inside a
+            # pane) — treat it as a failed check, not as "all panes dead"
+            return set(filter(None, result.stdout.strip().split("\n"))) or None
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+    return None  # None means "couldn't check" — don't remove anything
+
+
 def cleanup_orphans(state_dir, sessions, threshold):
-    """Remove orphaned state files (waiting sessions older than threshold)."""
+    """Remove state files for dead sessions.
+
+    Pane liveness is the source of truth: a session whose pane is gone is
+    dead (its SessionEnd never fired). The time threshold applies only when
+    the pane list can't be read or a file has no pane recorded — an idle
+    session in a live pane keeps its light indefinitely.
+    """
     now = time.time()
+    live_panes = get_live_pane_ids()
+
     for session in sessions:
-        # Only clean up waiting sessions — active sessions may be running
-        # long tasks without state transitions
-        if session.get("state") != "waiting":
+        session_id = session.get("session_id", "")
+        if not session_id:
             continue
-        state_changed_ts = session.get("state_changed_ts", 0)
-        if now - state_changed_ts > threshold:
-            session_id = session.get("session_id", "")
-            if session_id:
+        pane = session.get("tmux_pane", "")
+
+        if live_panes is not None and pane:
+            if pane not in live_panes:
                 try:
                     os.unlink(os.path.join(state_dir, f"{session_id}.json"))
                 except OSError:
                     pass
+            continue
+
+        # Fallback: pane unknown or list unavailable — reap stale waiting
+        # sessions by age (active sessions may be running long tasks)
+        if session.get("state") != "waiting":
+            continue
+        state_changed_ts = session.get("state_changed_ts", 0)
+        if now - state_changed_ts > threshold:
+            try:
+                os.unlink(os.path.join(state_dir, f"{session_id}.json"))
+            except OSError:
+                pass
 
 
 def main():

@@ -1,3 +1,12 @@
 __pycache__/
 *.pyc
-.beads/
+# Track only beads' portable files; databases, daemon state, and dolt
+# storage stay local (the inner .beads/.gitignore predates dolt and
+# doesn't cover it)
+.beads/*
+!.beads/.gitignore
+!.beads/issues.jsonl
+!.beads/interactions.jsonl
+!.beads/config.yaml
+!.beads/metadata.json
+!.beads/README.md
