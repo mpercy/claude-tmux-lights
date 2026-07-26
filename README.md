@@ -76,6 +76,23 @@ setw -g window-status-current-format ' #I:#W#(python3 /path/to/claude-tmux-light
 
 Reload with `tmux source-file ~/.tmux.conf` or `prefix + R`.
 
+## Codex CLI support
+
+Codex (0.145+) uses the same hook architecture as Claude Code, so the same
+plugin lights up Codex tabs. Install:
+
+```bash
+codex plugin marketplace add ~/src/claude-tmux-lights
+codex plugin add claude-tmux-lights@claude-tmux-lights
+```
+
+Then run `/hooks` once inside a Codex session to trust the hook commands
+(Codex records trust against each command's hash; re-approve after changing
+the hook manifest). Lights behave identically to Claude sessions, with one
+addition: Codex's `PermissionRequest` event turns the light yellow while a
+command waits for approval. Codex has no idle-prompt event, so the
+interrupt-recovery transition is Claude-only.
+
 ## How it works
 
 The plugin has two components:

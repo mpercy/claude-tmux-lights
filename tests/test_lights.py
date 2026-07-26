@@ -292,5 +292,40 @@ class TestOrphanCleanup(LightsTestCase):
         self.assertTrue(os.path.exists(self.state_path("s1")))
 
 
+CODEX_EVENTS = {
+    "SessionStart", "SessionEnd", "SubagentStart", "SubagentStop",
+    "PreToolUse", "PostToolUse", "PermissionRequest",
+    "PreCompact", "PostCompact", "UserPromptSubmit", "Stop",
+}
+
+
+class TestCodexManifests(unittest.TestCase):
+    """The Codex hook manifest must only use constructs Codex supports:
+    known events, sync command hooks, no async flags."""
+
+    def test_codex_hooks_manifest_is_codex_compatible(self):
+        with open(os.path.join(REPO_ROOT, "codex-hooks", "hooks.json")) as f:
+            manifest = json.load(f)
+        self.assertTrue(manifest["hooks"], "no events registered")
+        for event, groups in manifest["hooks"].items():
+            self.assertIn(event, CODEX_EVENTS)
+            for group in groups:
+                for hook in group["hooks"]:
+                    self.assertEqual(hook["type"], "command")
+                    self.assertNotIn("async", hook)
+                    self.assertIn("hook_handler.py", hook["command"])
+        # SessionEnd must not override Codex's ~1s cap
+        for group in manifest["hooks"].get("SessionEnd", []):
+            for hook in group["hooks"]:
+                self.assertNotIn("timeout", hook)
+
+    def test_codex_plugin_manifest_points_at_hooks(self):
+        with open(os.path.join(REPO_ROOT, ".codex-plugin", "plugin.json")) as f:
+            plugin = json.load(f)
+        self.assertEqual(plugin["name"], "claude-tmux-lights")
+        hooks_path = os.path.join(REPO_ROOT, plugin["hooks"])
+        self.assertTrue(os.path.isfile(hooks_path), hooks_path)
+
+
 if __name__ == "__main__":
     unittest.main()

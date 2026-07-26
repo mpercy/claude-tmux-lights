@@ -1,0 +1,16 @@
+{
+  "name": "claude-tmux-lights",
+  "interface": {
+    "displayName": "claude-tmux-lights"
+  },
+  "plugins": [
+    {
+      "name": "claude-tmux-lights",
+      "source": {
+        "source": "local",
+        "path": "./"
+      },
+      "description": "Show Claude Code and Codex session status indicators in tmux window tabs"
+    }
+  ]
+}
