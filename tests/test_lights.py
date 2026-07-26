@@ -199,6 +199,19 @@ class TestDaemonSessionPaneFallback(LightsTestCase):
         out = self.run_render("@4", active=False)
         self.assertIn("#[fg=", out)
 
+    def test_without_tmux_pane_codex_pane_beats_shell_in_same_cwd(self):
+        self.set_panes([
+            {"pane_id": "%30", "window_id": "@6", "command": "codex-aarch64-a",
+             "path": "/proj/codex"},
+            {"pane_id": "%31", "window_id": "@6", "command": "zsh",
+             "path": "/proj/codex"},
+        ])
+        self.run_hook({"hook_event_name": "Stop", "session_id": "cx1",
+                       "cwd": "/proj/codex"})
+        state = self.read_state("cx1")
+        self.assertEqual(state["tmux_pane"], "%30")
+        self.assertEqual(state["tmux_window"], "@6")
+
 
 class TestSelfHealingStateFiles(LightsTestCase):
     """Once a state file is wrongly removed, mid-turn hook events must be
@@ -220,6 +233,22 @@ class TestSelfHealingStateFiles(LightsTestCase):
     def test_notification_permission_prompt_recreates_missing_state_file(self):
         self.run_hook({"hook_event_name": "Notification",
                        "notification_type": "permission_prompt",
+                       "session_id": "s1", "cwd": "/proj/game"},
+                      tmux_pane="%12")
+        state = self.read_state("s1")
+        self.assertEqual(state["state"], "waiting")
+        self.assertEqual(state["tmux_window"], "@4")
+
+    def test_permission_request_sets_waiting(self):
+        self.write_state("s1", state="active", waiting_since_ts=None)
+        self.run_hook({"hook_event_name": "PermissionRequest",
+                       "session_id": "s1", "cwd": "/proj/game"},
+                      tmux_pane="%12")
+        state = self.read_state("s1")
+        self.assertEqual(state["state"], "waiting")
+
+    def test_permission_request_recreates_missing_state_file(self):
+        self.run_hook({"hook_event_name": "PermissionRequest",
                        "session_id": "s1", "cwd": "/proj/game"},
                       tmux_pane="%12")
         state = self.read_state("s1")

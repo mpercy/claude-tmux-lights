@@ -34,7 +34,7 @@ def get_tmux_window_id(tmux_pane):
     return None
 
 
-CLAUDE_COMMAND_RE = re.compile(r"^claude([-.\b]|$)|^\d+\.\d+\.\d+$")
+CLIENT_COMMAND_RE = re.compile(r"^(claude|codex)([-.]|$)|^\d+\.\d+\.\d+$")
 
 
 def find_pane_by_cwd(cwd):
@@ -43,7 +43,7 @@ def find_pane_by_cwd(cwd):
     Daemon-hosted (background) sessions run hooks in a worker process with
     no tmux ancestry, so the pane must be inferred: match the session's cwd
     against pane working directories, preferring the pane whose foreground
-    process looks like a Claude client ("claude", or a bare version string
+    process looks like a Claude or Codex client ("claude", "codex", or a bare version string
     like "2.1.220" — the CLI names its process after its version). Unrelated
     programs launched from the same directory (top, vim, dev servers) must
     not win or block the match. Returns (pane_id, window_id), or
@@ -73,7 +73,7 @@ def find_pane_by_cwd(cwd):
         if os.path.realpath(path) == target:
             candidates.append((pane_id, window_id, command))
 
-    claude_like = [c for c in candidates if CLAUDE_COMMAND_RE.match(c[2])]
+    claude_like = [c for c in candidates if CLIENT_COMMAND_RE.match(c[2])]
     if len(claude_like) == 1:
         return claude_like[0][0], claude_like[0][1]
     if not claude_like and len(candidates) == 1:
@@ -298,6 +298,26 @@ def handle_event(event, state_dir):
 
             return None
 
+        return None
+
+    if hook_name == "PermissionRequest":
+        # Codex CLI's equivalent of Claude's permission_prompt notification:
+        # the session is blocked waiting for the user to approve a command.
+        # Same semantics — go yellow (waiting), self-heal if the file is
+        # missing; PostToolUse flips back to active when work resumes.
+        existing = read_json_safe(state_path)
+        window_id = (existing or {}).get("tmux_window", "") or get_tmux_window_id(tmux_pane)
+        state = {
+            "session_id": session_id,
+            "state": "waiting",
+            "state_changed_ts": now,
+            "waiting_since_ts": now,
+            "cwd": event.get("cwd", (existing or {}).get("cwd", "")),
+            "tmux_pane": tmux_pane,
+            "tmux_window": window_id,
+        }
+        atomic_write_json(state_path, state)
+        tmux_refresh()
         return None
 
     if hook_name == "PostToolUse":
