@@ -162,6 +162,28 @@ class TestDaemonSessionPaneFallback(LightsTestCase):
                        "cwd": "/nowhere"})
         self.assertFalse(os.path.exists(self.state_path("bg1")))
 
+    def test_without_tmux_pane_ignores_non_claude_programs_in_same_cwd(self):
+        # A `top` (or vim, npm...) launched from the session's directory in
+        # some other window must not make resolution ambiguous
+        self.set_panes(PANES + [
+            {"pane_id": "%10", "window_id": "@3", "command": "top",
+             "path": "/proj/game"},
+        ])
+        self.run_hook({"hook_event_name": "Stop", "session_id": "bg1",
+                       "cwd": "/proj/game"})
+        state = self.read_state("bg1")
+        self.assertEqual(state["tmux_pane"], "%12")
+        self.assertEqual(state["tmux_window"], "@4")
+
+    def test_without_tmux_pane_single_shell_pane_still_matches(self):
+        # No claude client in the cwd, but exactly one pane lives there —
+        # light that window rather than staying invisible
+        self.run_hook({"hook_event_name": "Stop", "session_id": "bg1",
+                       "cwd": "/home/other"})
+        state = self.read_state("bg1")
+        self.assertEqual(state["tmux_pane"], "%8")
+        self.assertEqual(state["tmux_window"], "@3")
+
     def test_without_tmux_pane_ambiguous_candidates_writes_nothing(self):
         self.set_panes(PANES + [
             {"pane_id": "%30", "window_id": "@5", "command": "2.1.220",

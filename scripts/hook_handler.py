@@ -10,6 +10,7 @@ View tracking: {state_dir}/viewed.json
 
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -33,7 +34,7 @@ def get_tmux_window_id(tmux_pane):
     return None
 
 
-SHELL_COMMANDS = {"zsh", "bash", "fish", "sh", "dash", "tcsh", "csh", "nu", "login"}
+CLAUDE_COMMAND_RE = re.compile(r"^claude([-.\b]|$)|^\d+\.\d+\.\d+$")
 
 
 def find_pane_by_cwd(cwd):
@@ -42,9 +43,12 @@ def find_pane_by_cwd(cwd):
     Daemon-hosted (background) sessions run hooks in a worker process with
     no tmux ancestry, so the pane must be inferred: match the session's cwd
     against pane working directories, preferring the pane whose foreground
-    process is not a shell (the attached Claude client rather than an idle
-    prompt). Returns (pane_id, window_id), or (None, None) unless exactly
-    one candidate remains — no light beats a light on the wrong window.
+    process looks like a Claude client ("claude", or a bare version string
+    like "2.1.220" — the CLI names its process after its version). Unrelated
+    programs launched from the same directory (top, vim, dev servers) must
+    not win or block the match. Returns (pane_id, window_id), or
+    (None, None) unless exactly one candidate remains — no light beats a
+    light on the wrong window.
     """
     if not cwd:
         return None, None
@@ -69,10 +73,11 @@ def find_pane_by_cwd(cwd):
         if os.path.realpath(path) == target:
             candidates.append((pane_id, window_id, command))
 
-    preferred = [c for c in candidates if c[2] not in SHELL_COMMANDS]
-    pick = preferred or candidates
-    if len(pick) == 1:
-        return pick[0][0], pick[0][1]
+    claude_like = [c for c in candidates if CLAUDE_COMMAND_RE.match(c[2])]
+    if len(claude_like) == 1:
+        return claude_like[0][0], claude_like[0][1]
+    if not claude_like and len(candidates) == 1:
+        return candidates[0][0], candidates[0][1]
     return None, None
 
 
