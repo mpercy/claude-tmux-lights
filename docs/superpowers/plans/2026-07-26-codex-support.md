@@ -363,10 +363,12 @@ Run from a tmux pane (this session qualifies — `TMUX_PANE` is set):
 cd /private/tmp/claude-501/-Users-mpercy-src-claude-tmux-lights/2acf6168-8e6a-4192-98de-67294165e6a7/scratchpad
 rm -f probe_states.txt
 ( for i in $(seq 1 40); do ls ~/.local/state/claude-tmux-lights/ >> probe_states.txt; sleep 0.5; done ) &
-codex exec --dangerously-bypass-hook-trust "Reply with exactly: ok" 2>&1 | tail -3
+codex exec --dangerously-bypass-hook-trust --skip-git-repo-check "Reply with exactly: ok" 2>&1 | tail -3
 wait
 sort -u probe_states.txt
 ```
+
+Note: `--skip-git-repo-check` is required because the scratchpad directory above is not itself a git repository — without it, `codex exec` refuses to run with "Not inside a trusted directory and --skip-git-repo-check was not specified." It only relaxes that git-repo check; it does not affect hook-trust behavior.
 
 Expected: `sort -u` output includes a new `<codex-session-uuid>.json` during the run (SessionStart/Stop wrote it) that is absent from the final `ls` (SessionEnd deleted it). This proves: hooks fire, the handler works under Codex, and `TMUX_PANE` reached it (state file would be the probe pane's window).
 If NO state file ever appears: check whether hooks ran at all with `codex exec --dangerously-bypass-hook-trust -c 'features.hooks=true' ...`; if they ran but wrote nothing, add the temporary debug-log pattern from git history (`git log --oneline -S'TEMP DEBUG' -- scripts/hook_handler.py`) to diagnose, then remove it before committing.

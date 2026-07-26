@@ -93,6 +93,16 @@ addition: Codex's `PermissionRequest` event turns the light yellow while a
 command waits for approval. Codex has no idle-prompt event, so the
 interrupt-recovery transition is Claude-only.
 
+Unlike Claude Code, which runs plugins in place from wherever you cloned the
+repo, Codex **copies** the plugin into its own cache
+(`~/.codex/plugins/cache/claude-tmux-lights/...`) at `plugin add` time —
+`codex plugin list`'s PATH column shows the marketplace source, not this
+cache path, so it's easy to miss. That means repo edits (e.g. `git pull`,
+local hook changes) are *not* picked up automatically on the Codex side;
+after updating the repo, re-run
+`codex plugin add claude-tmux-lights@claude-tmux-lights` to refresh the
+cached copy.
+
 ## How it works
 
 The plugin has two components:
