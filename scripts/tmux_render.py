@@ -93,20 +93,28 @@ def render_indicator(session, viewed_json, config, now):
     return ""
 
 
-def get_live_pane_ids():
-    """Get set of currently active tmux pane IDs."""
+def get_pane_commands():
+    """Map live pane IDs to their foreground commands.
+
+    Returns None when the list can't be read or comes back empty (we render
+    from inside a pane, so an empty list can't be real) — callers treat None
+    as "couldn't check" and skip pane-based decisions.
+    """
     try:
         result = subprocess.run(
-            ["tmux", "list-panes", "-a", "-F", "#{pane_id}"],
+            ["tmux", "list-panes", "-a", "-F", "#{pane_id}\t#{pane_current_command}"],
             capture_output=True, text=True, timeout=5
         )
         if result.returncode == 0:
-            # An empty pane list can't be real (we're rendering inside a
-            # pane) — treat it as a failed check, not as "all panes dead"
-            return set(filter(None, result.stdout.strip().split("\n"))) or None
+            panes = {}
+            for line in result.stdout.splitlines():
+                pane_id, _, command = line.partition("\t")
+                if pane_id:
+                    panes[pane_id] = command
+            return panes or None
     except (subprocess.TimeoutExpired, FileNotFoundError):
         pass
-    return None  # None means "couldn't check" — don't remove anything
+    return None
 
 
 def cleanup_orphans(state_dir, sessions, threshold):
@@ -118,7 +126,7 @@ def cleanup_orphans(state_dir, sessions, threshold):
     session in a live pane keeps its light indefinitely.
     """
     now = time.time()
-    live_panes = get_live_pane_ids()
+    pane_commands = get_pane_commands()
 
     for session in sessions:
         session_id = session.get("session_id", "")
@@ -126,8 +134,8 @@ def cleanup_orphans(state_dir, sessions, threshold):
             continue
         pane = session.get("tmux_pane", "")
 
-        if live_panes is not None and pane:
-            if pane not in live_panes:
+        if pane_commands is not None and pane:
+            if pane not in pane_commands:
                 try:
                     os.unlink(os.path.join(state_dir, f"{session_id}.json"))
                 except OSError:

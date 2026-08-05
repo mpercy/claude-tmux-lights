@@ -291,6 +291,15 @@ class TestOrphanCleanup(LightsTestCase):
         self.run_render("@9", active=True)
         self.assertTrue(os.path.exists(self.state_path("s1")))
 
+    def test_cleanup_uses_pane_commands_map(self):
+        # get_pane_commands returns {pane_id: command}; pane-death reaping
+        # must keep working through the new structure
+        self.write_state("dead", tmux_pane="%99", tmux_window="@9")
+        self.write_state("alive", tmux_pane="%12", tmux_window="@4")
+        self.run_render("@1", active=True)
+        self.assertFalse(os.path.exists(self.state_path("dead")))
+        self.assertTrue(os.path.exists(self.state_path("alive")))
+
 
 CODEX_EVENTS = {
     "SessionStart", "SessionEnd", "SubagentStart", "SubagentStop",

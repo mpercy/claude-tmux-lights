@@ -2,7 +2,11 @@
 
 import json
 import os
+import re
 import tempfile
+
+
+CLIENT_COMMAND_RE = re.compile(r"^(claude|codex)([-.]|$)|^\d+\.\d+\.\d+$")
 
 
 def get_state_dir():

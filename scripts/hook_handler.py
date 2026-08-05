@@ -10,14 +10,13 @@ View tracking: {state_dir}/viewed.json
 
 import json
 import os
-import re
 import subprocess
 import sys
 import time
 
 # Add scripts directory to path for sibling imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from utils import atomic_write_json, get_state_dir, read_json_safe
+from utils import atomic_write_json, get_state_dir, read_json_safe, CLIENT_COMMAND_RE
 
 
 def get_tmux_window_id(tmux_pane):
@@ -32,9 +31,6 @@ def get_tmux_window_id(tmux_pane):
     except (subprocess.TimeoutExpired, FileNotFoundError):
         pass
     return None
-
-
-CLIENT_COMMAND_RE = re.compile(r"^(claude|codex)([-.]|$)|^\d+\.\d+\.\d+$")
 
 
 def find_pane_by_cwd(cwd):
