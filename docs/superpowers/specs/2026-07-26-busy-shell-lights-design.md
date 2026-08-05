@@ -42,16 +42,28 @@
 
 1. **Busy-green** (`render_indicator`): waiting + `viewed_ts >=
    state_changed_ts` + busy → render active icon/color, no elapsed suffix.
-2. **Demotion** (cleanup pass in `tmux_render.py` main): a session with
+2. **Demotion** (`cleanup_orphans` in `tmux_render.py`): a session with
    `state == "active"`, `state_changed_ts` older than
    `orphan_threshold_seconds` (1800s), whose pane's current command is not
    client-like, and with no live jobs record → rewrite the file as `waiting`
    + `waiting_since_ts = now`, and mark it viewed (white, acknowledged — the
    session idled out; nobody needs an alert). Renderer already writes
    viewed.json and unlinks session files; demotion uses `atomic_write_json`.
-   Race with a live hook write is benign: demotion only triggers after 30
-   silent minutes, and last-writer-wins resolves the once-in-an-epoch overlap
-   in favor of whichever reflects newer reality.
+   The two writes are ordered **acknowledgment first, state second**:
+   viewed.json is updated (`viewed[session_id] = now`) and flushed before the
+   session's state file is rewritten to `waiting`/`now`. This matters because
+   a concurrent renderer (another pane's status-line refresh) can read
+   between the two writes; if the state file flipped to `waiting` first, that
+   reader would see `viewed_ts < state_changed_ts` and flash yellow —
+   violating "acknowledged white, never yellow" for a demotion nobody asked
+   to be alerted on. Acknowledgment-first means the worst case an interleaved
+   reader observes is a viewed entry for a session that (from its state file)
+   still looks `active` — harmless, since `render_indicator` only consults
+   viewed.json for `waiting` sessions. A crash between the two writes leaves
+   the same harmless residue. Race with a live hook write is otherwise
+   benign: demotion only triggers after 30 silent minutes, and last-writer-
+   wins resolves the once-in-an-epoch overlap in favor of whichever reflects
+   newer reality.
 
 ## Implementation notes
 
