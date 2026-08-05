@@ -58,17 +58,22 @@ def daemon_job_record(session_id):
     path = os.path.join(os.path.expanduser("~"), ".claude", "jobs",
                         session_id[:8], "state.json")
     record = read_json_safe(path)
-    if record and record.get("sessionId") == session_id:
+    if isinstance(record, dict) and record.get("sessionId") == session_id:
         return record
     return None
 
 
 def job_is_busy(record):
-    """A job record counts as busy while work is actually running."""
+    """A job record counts as busy while work is actually running.
+
+    Trust only `state == "working"`. inFlight.tasks was dropped: live
+    daemon data showed done/idle records carrying inFlight.tasks > 0 for
+    days (leaked counters from fan agents), which under an OR clause made
+    a session green forever once acknowledged.
+    """
     if not record:
         return False
-    in_flight = record.get("inFlight") or {}
-    return record.get("state") == "working" or (in_flight.get("tasks") or 0) > 0
+    return record.get("state") == "working"
 
 
 def format_elapsed(seconds):

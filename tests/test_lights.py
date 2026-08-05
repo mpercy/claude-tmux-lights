@@ -359,6 +359,16 @@ class TestBusyGreen(LightsTestCase):
         out = self.run_render("@4", active=False)
         self.assertIn("colour252", out)
 
+    def test_done_job_with_leaked_inflight_tasks_stays_white(self):
+        # Observed live: fan agents leave inFlight.tasks > 0 on a
+        # done/idle record for days. Only state == "working" means busy.
+        state = self.write_state("leak1234-0000-0000-0000-000000000000")
+        self.acknowledge("leak1234-0000-0000-0000-000000000000", state)
+        self.write_job("leak1234-0000-0000-0000-000000000000",
+                       state="done", tasks=3)
+        out = self.run_render("@4", active=False)
+        self.assertIn("colour252", out)  # viewed grey, not green
+
 
 class TestStaleActiveDemotion(TestBusyGreen):
     """An active session whose events went missing (laptop-close) demotes
@@ -392,6 +402,13 @@ class TestStaleActiveDemotion(TestBusyGreen):
         self.write_job(sid, state="done", tasks=0)  # exists = alive
         self.run_render("@9", active=True)
         self.assertEqual(self.read_state(sid)["state"], "active")
+
+    def test_stale_active_with_mismatched_job_record_still_demotes(self):
+        sid = "mism1234-0000-0000-0000-000000000000"
+        self.stale_active(sid, pane="%21")
+        self.write_job(sid, real_id="other567-0000-0000-0000-000000000000")
+        self.run_render("@9", active=True)
+        self.assertEqual(self.read_state(sid)["state"], "waiting")
 
     def test_fresh_active_on_shell_pane_is_untouched(self):
         sid = "fres1234-0000-0000-0000-000000000000"
