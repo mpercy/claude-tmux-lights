@@ -360,6 +360,46 @@ class TestBusyGreen(LightsTestCase):
         self.assertIn("colour252", out)
 
 
+class TestStaleActiveDemotion(TestBusyGreen):
+    """An active session whose events went missing (laptop-close) demotes
+    to acknowledged-waiting after 30 min — but only on non-client panes."""
+
+    def stale_active(self, session_id, pane="%21", window="@4", age=1900):
+        old = time.time() - age
+        return self.write_state(session_id, state="active",
+                                state_changed_ts=old, waiting_since_ts=None,
+                                tmux_pane=pane, tmux_window=window)
+
+    def test_stale_active_on_shell_pane_demotes_to_white(self):
+        sid = "stal1234-0000-0000-0000-000000000000"
+        self.stale_active(sid, pane="%21")   # %21 runs zsh in PANES
+        self.run_render("@9", active=True)   # cleanup runs from active window
+        state = self.read_state(sid)
+        self.assertEqual(state["state"], "waiting")
+        self.assertIsNotNone(state["waiting_since_ts"])
+        out = self.run_render("@4", active=False)
+        self.assertIn("colour252", out)      # acknowledged white, not yellow
+
+    def test_stale_active_on_client_pane_is_untouched(self):
+        sid = "clie1234-0000-0000-0000-000000000000"
+        self.stale_active(sid, pane="%12")   # %12 runs "2.1.220" (client)
+        self.run_render("@9", active=True)
+        self.assertEqual(self.read_state(sid)["state"], "active")
+
+    def test_stale_active_with_live_job_record_is_untouched(self):
+        sid = "aliv1234-0000-0000-0000-000000000000"
+        self.stale_active(sid, pane="%21")
+        self.write_job(sid, state="done", tasks=0)  # exists = alive
+        self.run_render("@9", active=True)
+        self.assertEqual(self.read_state(sid)["state"], "active")
+
+    def test_fresh_active_on_shell_pane_is_untouched(self):
+        sid = "fres1234-0000-0000-0000-000000000000"
+        self.stale_active(sid, pane="%21", age=60)
+        self.run_render("@9", active=True)
+        self.assertEqual(self.read_state(sid)["state"], "active")
+
+
 class TestCodexManifests(unittest.TestCase):
     """The Codex hook manifest must only use constructs Codex supports:
     known events, sync command hooks, no async flags."""

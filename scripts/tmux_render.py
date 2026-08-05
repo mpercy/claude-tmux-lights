@@ -16,7 +16,7 @@ import time
 
 # Add scripts directory to path for sibling imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from utils import atomic_write_json, get_state_dir, read_json_safe
+from utils import CLIENT_COMMAND_RE, atomic_write_json, get_state_dir, read_json_safe
 
 
 # Default configuration
@@ -146,15 +146,19 @@ def get_pane_commands():
 
 
 def cleanup_orphans(state_dir, sessions, threshold):
-    """Remove state files for dead sessions.
+    """Remove state files for dead sessions; demote stale-active ones.
 
     Pane liveness is the source of truth: a session whose pane is gone is
     dead (its SessionEnd never fired). The time threshold applies only when
     the pane list can't be read or a file has no pane recorded — an idle
     session in a live pane keeps its light indefinitely.
+
+    Returns a list of (session_id, ts) pairs for sessions demoted from
+    stale-active to acknowledged-waiting, so callers can mark them viewed.
     """
     now = time.time()
     pane_commands = get_pane_commands()
+    demoted_ids = []
 
     for session in sessions:
         session_id = session.get("session_id", "")
@@ -168,6 +172,27 @@ def cleanup_orphans(state_dir, sessions, threshold):
                     os.unlink(os.path.join(state_dir, f"{session_id}.json"))
                 except OSError:
                     pass
+                continue
+
+            # Demote stale-active sessions on non-client panes: the pane
+            # isn't visibly hosting a client, no events have arrived for
+            # 30+ minutes, and no daemon job record proves it alive — the
+            # turn-end event was likely missed (e.g. laptop closed).
+            # Green would lie forever; acknowledged-white is the truth.
+            if (session.get("state") == "active"
+                    and now - session.get("state_changed_ts", 0) > threshold
+                    and not CLIENT_COMMAND_RE.match(pane_commands.get(pane, ""))
+                    and daemon_job_record(session_id) is None):
+                demoted = dict(session)
+                demoted["state"] = "waiting"
+                demoted["state_changed_ts"] = now
+                demoted["waiting_since_ts"] = now
+                try:
+                    atomic_write_json(
+                        os.path.join(state_dir, f"{session_id}.json"), demoted)
+                except OSError:
+                    pass
+                demoted_ids.append((session_id, now))
             continue
 
         # Fallback: pane unknown or list unavailable — reap stale waiting
@@ -180,6 +205,8 @@ def cleanup_orphans(state_dir, sessions, threshold):
                 os.unlink(os.path.join(state_dir, f"{session_id}.json"))
             except OSError:
                 pass
+
+    return demoted_ids
 
 
 def main():
@@ -212,15 +239,21 @@ def main():
     except OSError:
         sys.exit(0)
 
+    viewed_path = os.path.join(state_dir, "viewed.json")
+
     if not sessions:
         # Opportunistic cleanup — only from the active window to avoid
         # N redundant passes (one per window) every status-interval
         if window_active and all_sessions:
-            cleanup_orphans(state_dir, all_sessions, config["orphan_threshold_seconds"])
+            demoted = cleanup_orphans(state_dir, all_sessions, config["orphan_threshold_seconds"])
+            if demoted:
+                viewed_json = read_json_safe(viewed_path) or {}
+                for sid, ts in demoted:
+                    viewed_json[sid] = ts
+                atomic_write_json(viewed_path, viewed_json)
         sys.exit(0)
 
     # Read viewed.json
-    viewed_path = os.path.join(state_dir, "viewed.json")
     viewed_json = read_json_safe(viewed_path) or {}
 
     # If this is the active window, mark all waiting sessions as viewed
@@ -264,7 +297,12 @@ def main():
 
     # Opportunistic cleanup — only from the active window
     if window_active:
-        cleanup_orphans(state_dir, all_sessions, config["orphan_threshold_seconds"])
+        demoted = cleanup_orphans(state_dir, all_sessions, config["orphan_threshold_seconds"])
+        if demoted:
+            viewed_json = read_json_safe(viewed_path) or {}
+            for sid, ts in demoted:
+                viewed_json[sid] = ts
+            atomic_write_json(viewed_path, viewed_json)
 
 
 if __name__ == "__main__":
