@@ -48,6 +48,29 @@ def load_config():
     return config
 
 
+def daemon_job_record(session_id):
+    """Return the Claude daemon job record for a session, or None.
+
+    The record (~/.claude/jobs/<short>/state.json) exists only for
+    daemon-hosted sessions; its presence proves the session is alive even
+    when no tmux pane hosts a client for it.
+    """
+    path = os.path.join(os.path.expanduser("~"), ".claude", "jobs",
+                        session_id[:8], "state.json")
+    record = read_json_safe(path)
+    if record and record.get("sessionId") == session_id:
+        return record
+    return None
+
+
+def job_is_busy(record):
+    """A job record counts as busy while work is actually running."""
+    if not record:
+        return False
+    in_flight = record.get("inFlight") or {}
+    return record.get("state") == "working" or (in_flight.get("tasks") or 0) > 0
+
+
 def format_elapsed(seconds):
     """Format elapsed seconds as compact string: Ns, Nm, or NhMm."""
     seconds = int(seconds)
@@ -75,9 +98,14 @@ def render_indicator(session, viewed_json, config, now):
     if state == "waiting":
         viewed_ts = viewed_json.get(session_id, 0)
         if viewed_ts >= state_changed_ts:
-            # Viewed/acknowledged
-            icon = config["viewed_icon"]
-            color = config["viewed_color"]
+            # Viewed/acknowledged — but show green if daemon-hosted work
+            # is still running (turn ended, background task grinding on)
+            if job_is_busy(daemon_job_record(session_id)):
+                icon = config["active_icon"]
+                color = config["active_color"]
+            else:
+                icon = config["viewed_icon"]
+                color = config["viewed_color"]
             return f"#[fg={color}]{icon}#[fg=default]"
         else:
             # Not yet viewed — show yellow + elapsed time

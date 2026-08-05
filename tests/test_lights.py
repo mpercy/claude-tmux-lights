@@ -308,6 +308,58 @@ CODEX_EVENTS = {
 }
 
 
+class TestBusyGreen(LightsTestCase):
+    """A white (waiting+acknowledged) session with daemon-hosted work
+    running renders green; yellow (unviewed) always wins."""
+
+    def write_job(self, session_id, state="working", tasks=1, real_id=None):
+        jobs = os.path.join(self.home, ".claude", "jobs", session_id[:8])
+        os.makedirs(jobs, exist_ok=True)
+        with open(os.path.join(jobs, "state.json"), "w") as f:
+            json.dump({"sessionId": real_id or session_id, "state": state,
+                       "inFlight": {"tasks": tasks, "queued": 0, "kinds": []}}, f)
+
+    def acknowledge(self, session_id, state):
+        viewed = {session_id: state["state_changed_ts"] + 1}
+        with open(os.path.join(self.state_dir, "viewed.json"), "w") as f:
+            json.dump(viewed, f)
+
+    def test_white_session_with_busy_job_renders_green(self):
+        state = self.write_state("busy1234-0000-0000-0000-000000000000")
+        self.acknowledge("busy1234-0000-0000-0000-000000000000", state)
+        self.write_job("busy1234-0000-0000-0000-000000000000")
+        out = self.run_render("@4", active=False)
+        self.assertIn("colour46", out)   # active green, not viewed grey
+
+    def test_white_session_with_idle_job_stays_white(self):
+        state = self.write_state("idle1234-0000-0000-0000-000000000000")
+        self.acknowledge("idle1234-0000-0000-0000-000000000000", state)
+        self.write_job("idle1234-0000-0000-0000-000000000000",
+                       state="done", tasks=0)
+        out = self.run_render("@4", active=False)
+        self.assertIn("colour252", out)  # viewed grey
+
+    def test_white_session_without_job_stays_white(self):
+        state = self.write_state("nojo1234-0000-0000-0000-000000000000")
+        self.acknowledge("nojo1234-0000-0000-0000-000000000000", state)
+        out = self.run_render("@4", active=False)
+        self.assertIn("colour252", out)
+
+    def test_unviewed_session_with_busy_job_stays_yellow(self):
+        self.write_state("yell1234-0000-0000-0000-000000000000")
+        self.write_job("yell1234-0000-0000-0000-000000000000")
+        out = self.run_render("@4", active=False)
+        self.assertIn("colour226", out)  # waiting yellow wins
+
+    def test_job_with_mismatched_session_id_is_ignored(self):
+        state = self.write_state("mism1234-0000-0000-0000-000000000000")
+        self.acknowledge("mism1234-0000-0000-0000-000000000000", state)
+        self.write_job("mism1234-0000-0000-0000-000000000000",
+                       real_id="other567-0000-0000-0000-000000000000")
+        out = self.run_render("@4", active=False)
+        self.assertIn("colour252", out)
+
+
 class TestCodexManifests(unittest.TestCase):
     """The Codex hook manifest must only use constructs Codex supports:
     known events, sync command hooks, no async flags."""
