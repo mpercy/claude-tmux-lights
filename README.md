@@ -60,7 +60,7 @@ Add to your `~/.tmux.conf`:
 set -g @plugin 'mpercy/claude-tmux-lights'
 ```
 
-Press `prefix + I` to install. The plugin auto-configures your `window-status-format`.
+Press `prefix + I` to install. The plugin auto-configures your `status-left` and `window-status-format`.
 
 > **Note:** TPM handles the tmux side only. You still need the Claude Code plugin installed for the hooks to fire.
 
@@ -70,11 +70,19 @@ If you prefer not to use TPM or the setup command, add the renderer call to your
 
 ```bash
 # In ~/.tmux.conf (adjust the path to where you cloned the repo)
-setw -g window-status-format ' #I:#W#(python3 /path/to/claude-tmux-lights/scripts/tmux_render.py #{window_id} #{window_active}) '
-setw -g window-status-current-format ' #I:#W#(python3 /path/to/claude-tmux-lights/scripts/tmux_render.py #{window_id} #{window_active}) '
+
+# One renderer process per status-interval; it prints nothing and publishes
+# each window's indicator as the window option @light.
+set -g status-left '#(python3 /path/to/claude-tmux-lights/scripts/tmux_render.py --all)'
+
+# Window tabs read the option — no process is spawned per window.
+setw -g window-status-format ' #I:#W#{@light} '
+setw -g window-status-current-format ' #I:#W#{@light} '
 ```
 
-Reload with `tmux source-file ~/.tmux.conf` or `prefix + R`.
+If you already have a `status-left`, prepend the `#(...)` call to it. Reload with `tmux source-file ~/.tmux.conf` or `prefix + R`.
+
+> **Upgrading from the per-window wiring** (`#(python3 .../tmux_render.py #{window_id} #{window_active})` inside the window formats): replace that `#(...)` with `#{@light}` and add the `status-left` line. The old wiring spawned a shell, a Python interpreter and a tmux client *per window* every `status-interval` — with ten windows at a 2-second interval that is roughly 15 process births per second and was measured to add well over 100 to the load average on macOS.
 
 ## Codex CLI support
 
@@ -121,7 +129,7 @@ The plugin has two components:
 | `PermissionRequest` | Codex-only; sets state to waiting (yellow) while a command awaits approval |
 | `SessionEnd` | Deletes state file |
 
-**Renderer** (`scripts/tmux_render.py`) — Called by tmux every `status-interval` (typically 2s) for each window tab via `#()` interpolation. Reads state files, determines display, and outputs tmux-formatted indicator strings.
+**Renderer** (`scripts/tmux_render.py --all`) — Called by tmux once per `status-interval` via a `#()` in `status-left`. Reads all state files and the pane list (one `tmux list-panes`), computes every window's indicator, runs orphan cleanup, and publishes the results as the window option `@light` with a single `tmux set ... \; set ...` invocation. The window formats read `#{@light}` through ordinary format expansion. The hook handler calls the same routine after every state change, so lights update on the event and the interval only paces the elapsed-time counter and cleanup. The legacy per-window form (`tmux_render.py <window_id> <window_active>`) is still supported.
 
 State files live in `$XDG_RUNTIME_DIR/claude-tmux-lights/` or `~/.local/state/claude-tmux-lights/`.
 
@@ -181,7 +189,7 @@ Create `~/.config/claude-tmux-lights/config.json` to customize icons, colors, an
 | `max_indicators_per_window` | `5` | Max indicators per window (for multiple panes) |
 | `orphan_threshold_seconds` | `1800` | Seconds before stale waiting sessions are cleaned up |
 
-Config changes take effect on the next tmux status refresh (every `status-interval` seconds) — no restart needed.
+Config changes take effect on the next tmux status refresh (every `status-interval` seconds) — no restart needed. A `status-interval` of 5 is a good default: the renderer costs one process per tick regardless of window count, and state changes are pushed by the hooks immediately anyway.
 
 ## Requirements
 

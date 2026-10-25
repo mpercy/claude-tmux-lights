@@ -1,11 +1,19 @@
 #!/usr/bin/env python3
 """tmux status line renderer for Claude Code session indicators.
 
-Called from tmux window-status-format:
-  #(python3 /path/to/tmux_render.py #{window_id} #{window_active})
+Preferred (one process per status-interval), called from status-left:
+  #(python3 /path/to/tmux_render.py --all)
+Computes every window's indicator and publishes each as the window option
+@light in a single tmux invocation; window-status-format then reads it with
+plain format expansion:
+  setw -g window-status-format ' #I:#W#{@light} '
 
-Reads per-session state files and outputs tmux-formatted indicator strings.
-Writes to viewed.json when the active window has waiting sessions.
+Legacy (one process per window per tick), called from window-status-format:
+  #(python3 /path/to/tmux_render.py #{window_id} #{window_active})
+Prints the indicator for one window to stdout.
+
+Reads per-session state files; writes viewed.json when an active window has
+waiting sessions.
 """
 
 import json
@@ -126,31 +134,48 @@ def render_indicator(session, viewed_json, config, now):
     return ""
 
 
-def get_pane_commands():
-    """Map live pane IDs to their foreground commands.
+def get_panes():
+    """Describe every live pane with one tmux call.
 
-    Returns None when the list can't be read or comes back empty (we render
-    from inside a pane, so an empty list can't be real) — callers treat None
-    as "couldn't check" and skip pane-based decisions.
+    Returns {pane_id: {"window": window_id, "active": bool, "command": str}}
+    where "active" means the pane's window is the current window of its
+    session. Returns None when the list can't be read or comes back empty
+    (we render from inside a pane, so an empty list can't be real) —
+    callers treat None as "couldn't check" and skip pane-based decisions.
     """
     try:
         result = subprocess.run(
-            ["tmux", "list-panes", "-a", "-F", "#{pane_id}\t#{pane_current_command}"],
+            ["tmux", "list-panes", "-a", "-F",
+             "#{pane_id}\t#{window_id}\t#{window_active}\t#{pane_current_command}"],
             capture_output=True, text=True, timeout=5
         )
         if result.returncode == 0:
             panes = {}
             for line in result.stdout.splitlines():
-                pane_id, _, command = line.partition("\t")
-                if pane_id:
-                    panes[pane_id] = command
+                fields = line.split("\t", 3)
+                if len(fields) < 4 or not fields[0]:
+                    continue
+                pane_id, window_id, active, command = fields
+                panes[pane_id] = {
+                    "window": window_id,
+                    "active": active == "1",
+                    "command": command,
+                }
             return panes or None
     except (subprocess.TimeoutExpired, FileNotFoundError):
         pass
     return None
 
 
-def cleanup_orphans(state_dir, sessions, threshold):
+def get_pane_commands():
+    """Map live pane IDs to their foreground commands (None if unavailable)."""
+    panes = get_panes()
+    if panes is None:
+        return None
+    return {pane_id: info["command"] for pane_id, info in panes.items()}
+
+
+def cleanup_orphans(state_dir, sessions, threshold, pane_commands=None):
     """Remove state files for dead sessions; demote stale-active ones.
 
     Pane liveness is the source of truth: a session whose pane is gone is
@@ -162,7 +187,8 @@ def cleanup_orphans(state_dir, sessions, threshold):
     threshold (see below).
     """
     now = time.time()
-    pane_commands = get_pane_commands()
+    if pane_commands is None:
+        pane_commands = get_pane_commands()
 
     for session in sessions:
         session_id = session.get("session_id", "")
@@ -225,60 +251,35 @@ def cleanup_orphans(state_dir, sessions, threshold):
                 pass
 
 
-def main():
-    if len(sys.argv) < 3:
-        sys.exit(0)
-
-    window_id = sys.argv[1]
-    window_active = sys.argv[2] == "1"
-
-    state_dir = get_state_dir()
-    if not os.path.isdir(state_dir):
-        sys.exit(0)
-
-    config = load_config()
-    now = time.time()
-
-    # Read all session state files
+def load_sessions(state_dir):
+    """Read every session state file in state_dir (viewed.json excluded)."""
     sessions = []
-    all_sessions = []
     try:
         for filename in os.listdir(state_dir):
             if not filename.endswith(".json") or filename == "viewed.json":
                 continue
-            path = os.path.join(state_dir, filename)
-            data = read_json_safe(path)
+            data = read_json_safe(os.path.join(state_dir, filename))
             if data and isinstance(data, dict) and "session_id" in data:
-                all_sessions.append(data)
-                if data.get("tmux_window") == window_id:
-                    sessions.append(data)
+                sessions.append(data)
     except OSError:
-        sys.exit(0)
+        pass
+    return sessions
 
-    if not sessions:
-        # Opportunistic cleanup — only from the active window to avoid
-        # N redundant passes (one per window) every status-interval
-        if window_active and all_sessions:
-            cleanup_orphans(state_dir, all_sessions, config["orphan_threshold_seconds"])
-        sys.exit(0)
 
-    # Read viewed.json
-    viewed_path = os.path.join(state_dir, "viewed.json")
-    viewed_json = read_json_safe(viewed_path) or {}
+def render_window(sessions, window_active, viewed_json, config, now):
+    """Render one window's indicator string from its sessions.
 
-    # If this is the active window, mark all waiting sessions as viewed
+    If the window is active, its waiting sessions are acknowledged in
+    viewed_json (mutated in place). Returns (text, viewed_changed).
+    """
+    changed = False
     if window_active:
-        updated = False
         for session in sessions:
             if session.get("state") == "waiting":
                 sid = session.get("session_id", "")
-                state_changed_ts = session.get("state_changed_ts", 0)
-                viewed_ts = viewed_json.get(sid, 0)
-                if viewed_ts < state_changed_ts:
+                if viewed_json.get(sid, 0) < session.get("state_changed_ts", 0):
                     viewed_json[sid] = now
-                    updated = True
-        if updated:
-            atomic_write_json(viewed_path, viewed_json)
+                    changed = True
 
     # Deduplicate by tmux_pane — if two sessions claim the same pane,
     # keep only the most recently updated one (the other is a ghost).
@@ -288,26 +289,128 @@ def main():
         existing = by_pane.get(pane)
         if existing is None or session.get("state_changed_ts", 0) > existing.get("state_changed_ts", 0):
             by_pane[pane] = session
-    sessions = list(by_pane.values())
+    sessions = sorted(by_pane.values(), key=lambda s: s.get("session_id", ""))
 
-    # Sort sessions by session_id for deterministic indicator order
-    sessions.sort(key=lambda s: s.get("session_id", ""))
-
-    # Render indicators
-    max_indicators = config["max_indicators_per_window"]
     indicators = []
-    for session in sessions[:max_indicators]:
+    for session in sessions[:config["max_indicators_per_window"]]:
         indicator = render_indicator(session, viewed_json, config, now)
         if indicator:
             indicators.append(indicator)
 
-    if indicators:
-        # Leading space to separate from window name
-        sys.stdout.write(" " + "".join(indicators))
+    # Leading space separates the indicators from the window name
+    text = " " + "".join(indicators) if indicators else ""
+    return text, changed
 
-    # Opportunistic cleanup — only from the active window
-    if window_active:
+
+def publish_lights(lights, refresh=False):
+    """Set @light on every window in `lights` with ONE tmux invocation.
+
+    tmux accepts several commands in one argv separated by ';', so nine
+    windows cost one fork, not nine. An empty value clears a window whose
+    sessions have gone. With refresh=True the status line is redrawn in the
+    same call (used from hooks for instant updates).
+    """
+    argv = ["tmux"]
+    for window_id, text in lights.items():
+        argv += ["set", "-w", "-t", window_id, "@light", text, ";"]
+    if refresh:
+        argv += ["refresh-client", "-S", ";"]
+    if len(argv) == 1:
+        return False
+    argv.pop()  # trailing ';'
+    try:
+        subprocess.run(argv, capture_output=True, timeout=5)
+        return True
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return False
+
+
+def update_all(refresh=False):
+    """One-process mode: compute every window's light and publish them.
+
+    Returns True if tmux was reached and the lights were published.
+    """
+    state_dir = get_state_dir()
+    if not os.path.isdir(state_dir):
+        return False
+    panes = get_panes()
+    if panes is None:
+        return False  # tmux unreachable: nothing to draw on, change nothing
+
+    config = load_config()
+    pane_commands = {pid: info["command"] for pid, info in panes.items()}
+
+    # Reap/demote first so this tick renders the corrected state, then
+    # re-read whatever survived.
+    cleanup_orphans(state_dir, load_sessions(state_dir),
+                    config["orphan_threshold_seconds"], pane_commands)
+    sessions = load_sessions(state_dir)
+    now = time.time()
+
+    windows = {}  # window_id -> is active window in its session
+    for info in panes.values():
+        windows[info["window"]] = windows.get(info["window"], False) or info["active"]
+
+    by_window = {}
+    for session in sessions:
+        window_id = session.get("tmux_window", "")
+        if not window_id:
+            # Daemon-hosted sessions may know their pane but not its window
+            window_id = panes.get(session.get("tmux_pane", ""), {}).get("window", "")
+        if window_id:
+            by_window.setdefault(window_id, []).append(session)
+
+    viewed_path = os.path.join(state_dir, "viewed.json")
+    viewed_json = read_json_safe(viewed_path) or {}
+    lights = {}
+    viewed_changed = False
+    for window_id, active in windows.items():
+        text, changed = render_window(by_window.get(window_id, []), active,
+                                      viewed_json, config, now)
+        lights[window_id] = text
+        viewed_changed = viewed_changed or changed
+    if viewed_changed:
+        try:
+            atomic_write_json(viewed_path, viewed_json)
+        except OSError:
+            pass
+
+    return publish_lights(lights, refresh=refresh)
+
+
+def render_one(window_id, window_active):
+    """Legacy per-window mode: print this window's indicator to stdout."""
+    state_dir = get_state_dir()
+    if not os.path.isdir(state_dir):
+        return
+
+    config = load_config()
+    now = time.time()
+    all_sessions = load_sessions(state_dir)
+    sessions = [s for s in all_sessions if s.get("tmux_window") == window_id]
+
+    if sessions:
+        viewed_path = os.path.join(state_dir, "viewed.json")
+        viewed_json = read_json_safe(viewed_path) or {}
+        text, changed = render_window(sessions, window_active, viewed_json, config, now)
+        if changed:
+            atomic_write_json(viewed_path, viewed_json)
+        sys.stdout.write(text)
+
+    # Opportunistic cleanup — only from the active window to avoid
+    # N redundant passes (one per window) every status-interval
+    if window_active and all_sessions:
         cleanup_orphans(state_dir, all_sessions, config["orphan_threshold_seconds"])
+
+
+def main():
+    args = sys.argv[1:]
+    if args[:1] == ["--all"]:
+        update_all()
+        return
+    if len(args) < 2:
+        return
+    render_one(args[0], args[1] == "1")
 
 
 if __name__ == "__main__":

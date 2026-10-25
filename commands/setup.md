@@ -15,7 +15,23 @@ Configure tmux to display Claude Code session status indicators in the window ta
    - Otherwise, check `~/.tmux.conf` for `window-status-format` — if found, edit that file.
    - If neither has `window-status-format` set, append new `setw` lines to `~/.tmux.conf`.
 
-5. **Modify window-status-format**: For both `window-status-format` and `window-status-current-format`, append the renderer call inside the existing format string, just before the trailing `'`:
+5. **Wire the renderer**: ONE renderer process runs per `status-interval` from `status-left` and publishes every window's indicator as the window option `@light`. The window formats read it with plain format expansion — nothing is spawned per window.
+
+   a. Prepend the renderer call to `status-left` (it prints nothing, so it is invisible):
+
+   **Before:**
+   ```
+   set -g status-left '#(some-existing-command)'
+   ```
+
+   **After:**
+   ```
+   set -g status-left '#(python3 /absolute/path/to/scripts/tmux_render.py --all)#(some-existing-command)'
+   ```
+
+   If `status-left` is not set anywhere, add `set -g status-left '#(python3 /absolute/path/to/scripts/tmux_render.py --all)'`.
+
+   b. Append `#{@light}` to both `window-status-format` and `window-status-current-format`, just before the trailing `'`:
 
    **Before:**
    ```
@@ -25,13 +41,15 @@ Configure tmux to display Claude Code session status indicators in the window ta
 
    **After:**
    ```
-   setw -g window-status-format ' #I:#W#(python3 /absolute/path/to/scripts/tmux_render.py #{window_id} #{window_active}) '
-   setw -g window-status-current-format ' #I:#W#(python3 /absolute/path/to/scripts/tmux_render.py #{window_id} #{window_active}) '
+   setw -g window-status-format ' #I:#W#{@light} '
+   setw -g window-status-current-format ' #I:#W#{@light} '
    ```
 
    Replace `/absolute/path/to/scripts/tmux_render.py` with the actual resolved path from step 3.
 
-   **Important**: If the format strings already contain `tmux_render.py`, skip modification and inform the user it's already configured.
+   **Migrating from the legacy wiring**: if the window formats contain `#(python3 .../tmux_render.py #{window_id} #{window_active})`, replace that whole `#(...)` with `#{@light}` and add the `status-left` call from step (a). The legacy form spawned a Python process per window per tick and is the known cause of very high load averages on machines with many windows.
+
+   **Important**: If `status-left` already contains `tmux_render.py --all` and the formats contain `#{@light}`, skip modification and inform the user it's already configured.
 
 6. **Reload tmux config**: Suggest the user press their tmux prefix key followed by `R` (capital R) to reload, or run `tmux source-file ~/.tmux.conf`.
 
@@ -43,6 +61,6 @@ Configure tmux to display Claude Code session status indicators in the window ta
 
 ## Notes
 
-- The renderer is called every 2 seconds (based on `status-interval`) by tmux.
+- The renderer runs once per `status-interval` (e.g. every 5 seconds), regardless of window count. Hooks also publish lights immediately on state changes, so the interval only governs the elapsed-time counter and orphan cleanup.
 - If the plugin is reinstalled and the path changes, re-run this setup command.
 - Configuration options are in `~/.config/claude-tmux-lights/config.json` (optional).

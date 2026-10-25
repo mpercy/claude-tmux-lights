@@ -30,8 +30,29 @@ args = sys.argv[1:]
 def render(fmt, pane):
     return (fmt.replace("#{pane_id}", pane["pane_id"])
                .replace("#{window_id}", pane["window_id"])
+               .replace("#{window_active}", "1" if pane.get("active") else "0")
                .replace("#{pane_current_command}", pane["command"])
                .replace("#{pane_current_path}", pane["path"]))
+
+# tmux accepts several commands in one invocation separated by ';'
+commands, cur = [], []
+for a in args:
+    if a == ";":
+        commands.append(cur); cur = []
+    else:
+        cur.append(a)
+commands.append(cur)
+if len(commands) > 1 or (commands and commands[0][:1] in (["set"], ["set-option"])):
+    log_path = os.environ.get("FAKE_TMUX_LOG")
+    for cmd in commands:
+        if cmd[:1] in (["set"], ["set-option"]) and log_path:
+            with open(log_path, "a") as f:
+                f.write(json.dumps(cmd) + "\\n")
+        elif cmd[:1] == ["refresh-client"]:
+            pass
+        else:
+            sys.exit(2)
+    sys.exit(0)
 
 if args[:1] == ["list-panes"]:
     fmt = args[args.index("-F") + 1]
@@ -53,7 +74,7 @@ sys.exit(0)
 '''
 
 PANES = [
-    {"pane_id": "%12", "window_id": "@4", "command": "2.1.220", "path": "/proj/game"},
+    {"pane_id": "%12", "window_id": "@4", "command": "2.1.220", "path": "/proj/game", "active": True},
     {"pane_id": "%21", "window_id": "@4", "command": "zsh", "path": "/proj/game"},
     {"pane_id": "%8", "window_id": "@3", "command": "zsh", "path": "/home/other"},
 ]
@@ -79,11 +100,13 @@ class LightsTestCase(unittest.TestCase):
         self.tmux_state = os.path.join(self.tmp, "tmux_state.json")
         self.set_panes(PANES)
 
+        self.tmux_log = os.path.join(self.tmp, "tmux_log.jsonl")
         self.env = {
             "PATH": bindir + os.pathsep + os.environ.get("PATH", ""),
             "HOME": self.home,
             "XDG_RUNTIME_DIR": os.path.join(self.tmp, "runtime"),
             "FAKE_TMUX_STATE": self.tmux_state,
+            "FAKE_TMUX_LOG": self.tmux_log,
         }
 
     def set_panes(self, panes, fail=False):
@@ -109,6 +132,33 @@ class LightsTestCase(unittest.TestCase):
         )
         self.assertEqual(proc.returncode, 0, proc.stderr)
         return proc.stdout
+
+    def run_render_all(self):
+        """Run the one-process renderer; return {window_id: @light value}
+        from the set-option calls it made (last write wins)."""
+        try:
+            os.unlink(self.tmux_log)
+        except OSError:
+            pass
+        proc = subprocess.run(
+            [sys.executable, TMUX_RENDER, "--all"],
+            capture_output=True, text=True, env=self.env, timeout=30,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "", "--all must print nothing to the status line")
+        lights = {}
+        try:
+            with open(self.tmux_log) as f:
+                for line in f:
+                    cmd = json.loads(line)
+                    # expected shape: set -w -t <window> @light <value>
+                    self.assertEqual(cmd[:2], ["set", "-w"], cmd)
+                    self.assertEqual(cmd[2], "-t", cmd)
+                    self.assertEqual(cmd[4], "@light", cmd)
+                    lights[cmd[3]] = cmd[5]
+        except FileNotFoundError:
+            pass
+        return lights
 
     def state_path(self, session_id):
         return os.path.join(self.state_dir, f"{session_id}.json")
@@ -299,6 +349,79 @@ class TestOrphanCleanup(LightsTestCase):
         self.run_render("@1", active=True)
         self.assertFalse(os.path.exists(self.state_path("dead")))
         self.assertTrue(os.path.exists(self.state_path("alive")))
+
+
+class TestRenderAll(LightsTestCase):
+    """`tmux_render.py --all` runs once per status-interval, computes every
+    window's indicator, and publishes them as the window option @light in a
+    single tmux invocation — replacing one python+tmux spawn per window."""
+
+    def test_sets_light_for_window_with_session_and_clears_others(self):
+        self.write_state("s1", state="active", tmux_pane="%12", tmux_window="@4")
+        lights = self.run_render_all()
+        self.assertIn("\u25cf", lights["@4"])          # active icon
+        self.assertEqual(lights["@3"], "")              # no session: cleared
+
+    def test_single_tmux_invocation_for_all_windows(self):
+        self.write_state("s1", state="active", tmux_pane="%12", tmux_window="@4")
+        self.run_render_all()
+        with open(self.tmux_log) as f:
+            lines = f.read().splitlines()
+        # One `set` per window present in list-panes, all from one process:
+        # the fake tmux logs every ';'-separated sub-command of an invocation
+        self.assertEqual(len(lines), 2)
+
+    def test_matches_per_window_output(self):
+        old = time.time() - 125
+        self.write_state("s1", state="waiting", state_changed_ts=old,
+                         waiting_since_ts=old, tmux_pane="%8", tmux_window="@3")
+        self.write_state("s2", state="active", tmux_pane="%12", tmux_window="@4")
+        lights = self.run_render_all()
+        self.assertEqual(lights["@3"], self.run_render("@3", active=False))
+        self.assertEqual(lights["@4"], self.run_render("@4", active=True))
+
+    def test_active_window_marks_waiting_sessions_viewed(self):
+        # %12 lives in @4, which the pane list flags as the active window
+        self.write_state("s1", state="waiting", tmux_pane="%12", tmux_window="@4")
+        self.write_state("s2", state="waiting", tmux_pane="%8", tmux_window="@3")
+        lights = self.run_render_all()
+        self.assertIn("\u25cb", lights["@4"])          # viewed (white)
+        self.assertIn("\u25c6", lights["@3"])          # still yellow
+        with open(os.path.join(self.state_dir, "viewed.json")) as f:
+            viewed = json.load(f)
+        self.assertIn("s1", viewed)
+        self.assertNotIn("s2", viewed)
+
+    def test_runs_orphan_cleanup_once(self):
+        self.write_state("dead", tmux_pane="%99", tmux_window="@9")
+        self.write_state("alive", tmux_pane="%12", tmux_window="@4")
+        self.run_render_all()
+        self.assertFalse(os.path.exists(self.state_path("dead")))
+        self.assertTrue(os.path.exists(self.state_path("alive")))
+
+    def test_window_inferred_from_pane_when_missing(self):
+        # Daemon-hosted sessions can record a pane but no window
+        self.write_state("s1", state="active", tmux_pane="%8", tmux_window="")
+        lights = self.run_render_all()
+        self.assertIn("\u25cf", lights["@3"])
+
+    def test_pane_list_unavailable_is_a_noop(self):
+        self.write_state("s1", state="active")
+        self.set_panes([], fail=True)
+        lights = self.run_render_all()
+        self.assertEqual(lights, {})
+        self.assertTrue(os.path.exists(self.state_path("s1")))
+
+    def test_hook_publishes_lights_immediately(self):
+        # Event-driven path: the hook handler updates @light itself so the
+        # light changes on the event, not on the next status-interval tick
+        self.run_hook({"hook_event_name": "UserPromptSubmit", "session_id": "s1",
+                       "cwd": "/proj/game"}, tmux_pane="%12")
+        with open(self.tmux_log) as f:
+            cmds = [json.loads(l) for l in f]
+        sets = [c for c in cmds if c[:2] == ["set", "-w"] and c[3] == "@4"]
+        self.assertTrue(sets, cmds)
+        self.assertIn("\u25cf", sets[-1][5])
 
 
 CODEX_EVENTS = {

@@ -17,6 +17,7 @@ import time
 # Add scripts directory to path for sibling imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from utils import atomic_write_json, get_state_dir, read_json_safe, CLIENT_COMMAND_RE
+from tmux_render import update_all
 
 
 def get_tmux_window_id(tmux_pane):
@@ -78,7 +79,14 @@ def find_pane_by_cwd(cwd):
 
 
 def tmux_refresh():
-    """Trigger tmux status line refresh."""
+    """Publish the new lights and redraw the status line.
+
+    Event-driven path: recomputing @light here means the tab changes the
+    instant state changes, instead of waiting for the next status-interval
+    tick. Falls back to a bare redraw if the lights can't be published.
+    """
+    if update_all(refresh=True):
+        return
     try:
         subprocess.run(
             ["tmux", "refresh-client", "-S"],
@@ -113,14 +121,16 @@ def check_tmux_setup():
     except OSError:
         pass
 
-    # Check if tmux has our renderer configured
+    # Check if tmux has our renderer configured: either the one-process
+    # renderer in status-left (preferred) or the legacy per-window call
     try:
-        result = subprocess.run(
-            ["tmux", "show-options", "-gv", "window-status-format"],
-            capture_output=True, text=True, timeout=5
-        )
-        if result.returncode == 0 and "tmux_render.py" in result.stdout:
-            return None  # Already configured
+        for option in ("status-left", "window-status-format"):
+            result = subprocess.run(
+                ["tmux", "show-options", "-gv", option],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.returncode == 0 and "tmux_render.py" in result.stdout:
+                return None  # Already configured
     except (subprocess.TimeoutExpired, FileNotFoundError):
         return None  # Can't check, don't nag
 
